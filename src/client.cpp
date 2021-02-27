@@ -10,11 +10,23 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <vector>
+#include <fstream>
+#include <filesystem>
+#include <stdio.h>
 
-#define BUFSIZE 500
+#include "./message.hpp"
+
+#define BUFSIZE 1000
+
+char file_name[15];
 
 struct server_data {
    int sock;
+   struct sockaddr_storage storage;
+};
+
+struct udp_connection {
+   int udp_sock;
    struct sockaddr_storage storage;
 };
 
@@ -26,55 +38,172 @@ void usage()
    exit(EXIT_FAILURE);
 }
 
-void * client_receiving_thread(void *data)
+uint64_t get_file_size()
 {
-   struct server_data *s_data = (struct server_data *)data;
-   //struct sockaddr *s_addr = (struct sockaddr *)(&s_data->storage);
+   std::ifstream file(file_name, std::ifstream::in | std::ifstream::binary);
 
+   if (!file.is_open())
+   {
+      return -1;
+   }
+
+   file.seekg(0, std::ios::end);
+   uint64_t file_size = file.tellg();
+   file.close();
+
+   return file_size;
+}
+
+void create_udp_socket(struct udp_connection *udp_data, int port, int ss_family)
+{
+   if (ss_family == AF_INET)
+   {
+      struct sockaddr_in *addr4 = (struct sockaddr_in *)(&udp_data->storage);
+      addr4->sin_family = AF_INET;
+      addr4->sin_addr.s_addr = INADDR_ANY;
+      addr4->sin_port = htons(port);
+   } 
+   else if (ss_family== AF_INET6)
+   {
+      struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)(&udp_data->storage);
+      addr6->sin6_family = AF_INET6;
+      addr6->sin6_addr = in6addr_any;
+      addr6->sin6_port = htons(port);
+   }
+
+   udp_data->udp_sock = socket(udp_data->storage.ss_family,  SOCK_DGRAM, 0);
+   if (udp_data->udp_sock == -1)
+   {
+      std::cout << "[!] Error creating UDP socket" << std::endl;
+      exit(EXIT_FAILURE);
+   }
+}
+
+void send_hello(struct server_data *s_data)
+{
+   HELLO_OK_FIM_message_struct *msg = new HELLO_OK_FIM_message_struct;
+   msg->id = HELLO;
+
+   send(s_data->sock, msg, sizeof(CONNECTION_message_struct), 0);
+
+   std::cout << "Hello Sent" << std::endl;
+
+   delete msg;
+}
+
+void recv_connection(struct server_data *s_data, struct udp_connection *udp_data)
+{
    char r_buffer[BUFSIZE];
    memset(r_buffer, 0, BUFSIZE);
 
-   while(1)
+   size_t count = recv(s_data->sock, &r_buffer, BUFSIZE, 0);
+
+   if (count > 0)
    {
-      size_t count_recv = recv(s_data->sock, r_buffer, BUFSIZE, 0);
-      if (count_recv > 0)
+      CONNECTION_message_struct * conn_msg = new CONNECTION_message_struct;
+      memcpy(conn_msg, &r_buffer, sizeof(CONNECTION_message_struct));
+
+      if (conn_msg->id != CONNECTION)
       {
-         std::cout << "Received: " << std::string(r_buffer) << std::endl;
+         exit(EXIT_FAILURE);
       }
-      else if (count_recv == 0)
+      else
       {
-         exit(EXIT_SUCCESS);
+         std::cout << "Connection received" << std::endl;
       }
 
-      memset(r_buffer, 0, BUFSIZE);
+      int ss_family = s_data->storage.ss_family;
+
+      create_udp_socket(udp_data, conn_msg->port, ss_family);
+
+      delete conn_msg;
    }
+}
 
-   pthread_exit(EXIT_SUCCESS);
-};
+void send_infofile(struct server_data *s_data)
+{
+   INFOFILE_message_struct *msg = new INFOFILE_message_struct;
+   msg->id = INFO_FILE;
+   
+   uint64_t file_size = get_file_size();
 
-void * client_sending_thread(void *data)
+   msg->file_size = file_size;
+   memcpy(&(msg->file_name), &file_name, sizeof(file_name));
+
+   send(s_data->sock, msg, sizeof(INFOFILE_message_struct), 0);
+
+   std::cout << "Info File sent" << std::endl;
+
+   delete msg;
+}
+
+void recv_ok(struct server_data *s_data)
+{
+   char r_buffer[BUFSIZE];
+   memset(r_buffer, 0, BUFSIZE);
+
+   size_t count = recv(s_data->sock, &r_buffer, BUFSIZE, 0);
+
+   if (count > 0)
+   {
+      HELLO_OK_FIM_message_struct * msg = new HELLO_OK_FIM_message_struct;
+      memcpy(msg, &r_buffer, sizeof(HELLO_OK_FIM_message_struct));
+
+      if (msg->id != OK)
+      {
+         exit(EXIT_FAILURE);
+      }
+      else
+      {
+         std::cout << "Ok received" << std::endl;
+      }
+
+      delete msg;
+   }
+}
+
+void recv_fim(struct server_data *s_data)
+{
+   char r_buffer[BUFSIZE];
+   memset(r_buffer, 0, BUFSIZE);
+
+   size_t count = recv(s_data->sock, &r_buffer, BUFSIZE, 0);
+
+   if (count > 0)
+   {
+      HELLO_OK_FIM_message_struct * msg = new HELLO_OK_FIM_message_struct;
+      memcpy(msg, &r_buffer, sizeof(HELLO_OK_FIM_message_struct));
+
+      if (msg->id != FIM)
+      {
+         exit(EXIT_FAILURE);
+      }
+      else
+      {
+         std::cout << "Fim received" << std::endl;
+      }
+
+      delete msg;
+   }
+}
+
+void * client_thread(void *data)
 {
    struct server_data *s_data = (struct server_data *)data;
 
-   std::string buffer;
-   
-   while(std::getline(std::cin, buffer))
-   {
-      if(std::string(buffer).length() > 0)
-      {
-         buffer = buffer + '\n';
-         size_t count_send = send(s_data->sock, buffer.c_str(), std::string(buffer).length(), 0);
-         if (count_send != std::string(buffer).length())
-         {
-            std::cout << "[!] Error while sending message" << std::endl;
-         }
-         if (buffer == "!EXIT")
-         {
-            break;
-         }
-      }
-   }
+   send_hello(s_data);
 
+   struct udp_connection *udp_data = new udp_connection;
+   recv_connection(s_data, udp_data);
+
+   send_infofile(s_data);
+
+   recv_ok(s_data);
+
+   recv_fim(s_data);
+
+   close(s_data->sock);
+   close(udp_data->udp_sock);
    pthread_exit(EXIT_SUCCESS);
 };
 
@@ -88,6 +217,7 @@ int main(int argc, char *argv[])
    /* Get port and server ip */
    int port = atoi(argv[2]);
    std::string server_ip = std::string(argv[1]);
+   memcpy(&file_name, argv[3], 15 * sizeof(char));
 
    /* Try connecting to the server */
    std::cout << ">> Connecting to server: " << server_ip << " / port: " << port << " ..." << std::endl;
@@ -144,13 +274,10 @@ int main(int argc, char *argv[])
 
    memcpy(&(server_data_thread->storage), &storage, sizeof(storage));
 
-   pthread_t send_thread;
-   pthread_create(&send_thread, NULL, client_sending_thread, server_data_thread);
-
-   pthread_t recv_thread;
-   pthread_create(&recv_thread, NULL, client_receiving_thread, server_data_thread);
-
-   pthread_join(recv_thread, NULL);
+   pthread_t tid;
+   pthread_create(&tid, NULL, client_thread, server_data_thread);
+   
+   pthread_join(tid, NULL);
 
    close(sock);
    exit(EXIT_SUCCESS);
