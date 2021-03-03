@@ -11,11 +11,12 @@
 #include <pthread.h>
 #include <vector>
 #include <algorithm>
+#include <fstream>
 
 #include "./utils.hpp"
 #include "./message.hpp"
 
-#define BUFSIZE 1000
+#define BUFSIZE 1008
 
 struct client_data
 {
@@ -27,6 +28,8 @@ struct udp_connection
 {
    int udp_sock;
    struct sockaddr_storage storage;
+   char file_name[15];
+   uint64_t file_size;
 };
 
 void usage()
@@ -163,6 +166,40 @@ void send_fim(struct client_data *c_data)
    delete msg;
 }
 
+void write_file(struct udp_connection *udp_data)
+{
+   std::ofstream file(udp_data->file_name, std::ios::binary | std::ios::out);
+
+   char buffer[udp_data->file_size];
+   socklen_t addr_size = sizeof(udp_data->storage);
+
+   while(1)
+   {
+      recvfrom(udp_data->udp_sock, buffer, udp_data->file_size, 0, (struct sockaddr *)(&udp_data->storage), &addr_size);
+
+      if (strcmp(buffer, "END") == 0)
+      {
+         break;
+         return;
+      }
+
+      file.write(buffer, udp_data->file_size);
+
+      bzero(buffer, udp_data->file_size);
+   }
+
+   file.close();
+}
+
+void * udp_file_thread(void *data)
+{
+   struct udp_connection *udp_data = (struct udp_connection *)data;
+
+   write_file(udp_data);
+
+   pthread_exit(EXIT_SUCCESS);
+}
+
 void * client_handling_thread(void *data)
 {
    struct client_data *c_data = (struct client_data *)data;
@@ -195,7 +232,15 @@ void * client_handling_thread(void *data)
    uint64_t file_size;
    recv_infofile(c_data, file_name, &file_size);
 
+   memcpy(udp_data->file_name, file_name, 15);
+   udp_data->file_size = file_size;
+
+   pthread_t udp_thread;
+   pthread_create(&udp_thread, NULL, udp_file_thread, udp_data);
+
    send_ok(c_data);
+
+   pthread_join(udp_thread, NULL);
 
    send_fim(c_data);
 

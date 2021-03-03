@@ -12,7 +12,7 @@
 #include <vector>
 #include <fstream>
 #include <filesystem>
-#include <stdio.h>
+#include <cstdio>
 
 #include "./message.hpp"
 
@@ -20,12 +20,14 @@
 
 char file_name[15];
 
-struct server_data {
+struct server_data
+{
    int sock;
    struct sockaddr_storage storage;
 };
 
-struct udp_connection {
+struct udp_connection
+{
    int udp_sock;
    struct sockaddr_storage storage;
 };
@@ -62,8 +64,8 @@ void create_udp_socket(struct udp_connection *udp_data, int port, int ss_family)
       addr4->sin_family = AF_INET;
       addr4->sin_addr.s_addr = INADDR_ANY;
       addr4->sin_port = htons(port);
-   } 
-   else if (ss_family== AF_INET6)
+   }
+   else if (ss_family == AF_INET6)
    {
       struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)(&udp_data->storage);
       addr6->sin6_family = AF_INET6;
@@ -71,7 +73,7 @@ void create_udp_socket(struct udp_connection *udp_data, int port, int ss_family)
       addr6->sin6_port = htons(port);
    }
 
-   udp_data->udp_sock = socket(udp_data->storage.ss_family,  SOCK_DGRAM, 0);
+   udp_data->udp_sock = socket(udp_data->storage.ss_family, SOCK_DGRAM, 0);
    if (udp_data->udp_sock == -1)
    {
       std::cout << "[!] Error creating UDP socket" << std::endl;
@@ -100,7 +102,7 @@ void recv_connection(struct server_data *s_data, struct udp_connection *udp_data
 
    if (count > 0)
    {
-      CONNECTION_message_struct * conn_msg = new CONNECTION_message_struct;
+      CONNECTION_message_struct *conn_msg = new CONNECTION_message_struct;
       memcpy(conn_msg, &r_buffer, sizeof(CONNECTION_message_struct));
 
       if (conn_msg->id != CONNECTION)
@@ -124,7 +126,7 @@ void send_infofile(struct server_data *s_data)
 {
    INFOFILE_message_struct *msg = new INFOFILE_message_struct;
    msg->id = INFO_FILE;
-   
+
    uint64_t file_size = get_file_size();
 
    msg->file_size = file_size;
@@ -146,7 +148,7 @@ void recv_ok(struct server_data *s_data)
 
    if (count > 0)
    {
-      HELLO_OK_FIM_message_struct * msg = new HELLO_OK_FIM_message_struct;
+      HELLO_OK_FIM_message_struct *msg = new HELLO_OK_FIM_message_struct;
       memcpy(msg, &r_buffer, sizeof(HELLO_OK_FIM_message_struct));
 
       if (msg->id != OK)
@@ -171,7 +173,7 @@ void recv_fim(struct server_data *s_data)
 
    if (count > 0)
    {
-      HELLO_OK_FIM_message_struct * msg = new HELLO_OK_FIM_message_struct;
+      HELLO_OK_FIM_message_struct *msg = new HELLO_OK_FIM_message_struct;
       memcpy(msg, &r_buffer, sizeof(HELLO_OK_FIM_message_struct));
 
       if (msg->id != FIM)
@@ -187,23 +189,62 @@ void recv_fim(struct server_data *s_data)
    }
 }
 
-void * client_thread(void *data)
+void send_file_to_server(struct udp_connection *udp_data)
+{
+   std::ifstream file(file_name, std::ios::binary | std::ios::ate);
+
+   uint64_t file_size = get_file_size();
+   char buffer[file_size];
+
+   file.seekg(0, std::ios::beg);
+
+   if(file.read(buffer, file_size))
+   {
+      int s = sendto(udp_data->udp_sock, buffer, file_size, 0, (struct sockaddr *)(&udp_data->storage), sizeof(udp_data->storage));
+
+      if (s == -1)
+      {
+         std::cout << "[!] Cannot send file" << std::endl;
+         exit(EXIT_FAILURE);
+      }
+
+      bzero(buffer, file_size);
+
+      strcpy(buffer, "END");
+      sendto(udp_data->udp_sock, buffer, file_size, 0, (struct sockaddr *)(&udp_data->storage), sizeof(udp_data->storage));
+   }
+
+   file.close();
+}
+
+void *udp_file_thread(void *data)
+{
+   struct udp_connection *upd_data = (struct udp_connection *)data;
+   send_file_to_server(upd_data);
+
+   close(upd_data->udp_sock);
+   pthread_exit(EXIT_SUCCESS);
+}
+
+void *client_thread(void *data)
 {
    struct server_data *s_data = (struct server_data *)data;
 
    send_hello(s_data);
 
-   struct udp_connection *udp_data = new udp_connection;
-   recv_connection(s_data, udp_data);
+   struct udp_connection *udp_thread_data = new udp_connection;
+   recv_connection(s_data, udp_thread_data);
 
    send_infofile(s_data);
 
    recv_ok(s_data);
 
+   pthread_t udp_thread;
+   pthread_create(&udp_thread, NULL, udp_file_thread, udp_thread_data);
+
    recv_fim(s_data);
 
    close(s_data->sock);
-   close(udp_data->udp_sock);
    pthread_exit(EXIT_SUCCESS);
 };
 
@@ -249,7 +290,7 @@ int main(int argc, char *argv[])
       std::cout << ">> 128-bit IP address (IPv6)" << std::endl;
    }
 
-   int sock = socket(storage.ss_family,  SOCK_STREAM, 0);
+   int sock = socket(storage.ss_family, SOCK_STREAM, 0);
    if (sock == -1)
    {
       std::cout << "[!] Error while creating socket" << std::endl;
@@ -276,7 +317,7 @@ int main(int argc, char *argv[])
 
    pthread_t tid;
    pthread_create(&tid, NULL, client_thread, server_data_thread);
-   
+
    pthread_join(tid, NULL);
 
    close(sock);
