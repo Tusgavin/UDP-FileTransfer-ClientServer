@@ -9,9 +9,9 @@ To compile the program, go to /src and run the command:
 make 
 ```
 
-The commands creates a folder client, with the executable 'cliente' and the executable 'servidor' stays in the /src.
+The commands creates a folder client with the executable 'cliente' and a folder server with the executable 'servidor'.
 
-In the /src folder start the server:
+In the 'server' folder start the server:
 
 ```properties
 ./servidor <port> 
